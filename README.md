@@ -10,3 +10,7 @@ https://samhk222.github.io/leitor-rfid-simulador/
 - **USB:** clique em "Conectar via USB" e escolha a porta do ESP32 (115200 baud).
 
 Requer Chrome ou Edge (Web Bluetooth / Web Serial). Safari e iOS não suportam.
+
+## Firmware
+
+O sketch do ESP32-S3 + RC522 está em [`firmware/LeitorHackerDeTag/LeitorHackerDeTag.ino`](firmware/LeitorHackerDeTag/LeitorHackerDeTag.ino). Abra essa pasta no Arduino IDE (core esp32 3.x, placa ESP32S3, lib MFRC522).
