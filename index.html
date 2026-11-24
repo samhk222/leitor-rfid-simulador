@@ -105,6 +105,11 @@
     width: 100%; background: var(--term-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: 13px var(--mono);
   }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .conn { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 10px; border-bottom: 1px solid var(--border); }
+  .conn .status { font-size: 13px; color: var(--muted); margin-left: auto; }
+  .conn .status.live { color: var(--accent); }
+  .conn button[hidden] { display: none; }
+  .bench-off { opacity: .35; pointer-events: none; }
   .hint { font-size: 12px; color: var(--muted); padding: 0 14px 12px; }
 </style>
 </head>
@@ -116,7 +121,13 @@
 
 <main>
   <section class="panel">
-    <h2>Serial Monitor <span class="badge" id="baud">115200 baud</span></h2>
+    <h2>Serial Monitor <span class="badge" id="baud">simulador</span></h2>
+    <div class="conn">
+      <button type="button" id="btnBle">Conectar via Bluetooth</button>
+      <button type="button" id="btnUsb">Conectar via USB</button>
+      <button type="button" id="btnDisc" hidden>Desconectar</button>
+      <span class="status" id="connStatus">Simulador (nenhuma placa conectada)</span>
+    </div>
     <pre id="term" aria-live="polite"></pre>
     <form class="sendbar" id="sendForm">
       <input id="input" autocomplete="off" placeholder="Digite um comando (1-5, m) e Enter" aria-label="Mensagem para a serial">
@@ -131,7 +142,7 @@
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="bench">
     <h2>Bancada <span class="badge" id="modeBadge">modo: NENHUM</span></h2>
     <div class="reader-wrap">
       <div id="reader">
@@ -503,6 +514,7 @@
   const input = document.getElementById('input');
   function send(str) {
     println(str, 'tx');
+    if (conn) { conn.write(str + '\n').catch(err => println('Erro ao enviar: ' + err.message, 'err')); return; }
     tratarSerial(str + '\n');
   }
   document.getElementById('sendForm').addEventListener('submit', e => {
@@ -516,9 +528,107 @@
     b.addEventListener('click', () => send(c)); quick.append(b);
   });
   document.getElementById('clearTerm').addEventListener('click', () => { term.textContent = ''; lineOpen = false; });
-  document.getElementById('reset').addEventListener('click', () => { if (!busy) setup(); });
+  document.getElementById('reset').addEventListener('click', () => { if (!busy && !conn) setup(); });
   document.getElementById('newTag').addEventListener('click', () => openDialog(null));
   document.getElementById('resetTags').addEventListener('click', () => { placedId = null; tags = defaultTags(); saveTags(); renderTags(); renderReader(); });
+
+  // ---------- Placa real (Web Bluetooth / Web Serial) ----------
+  const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+  const NUS_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';   // escreve no ESP
+  const NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';   // notificacoes do ESP
+  let conn = null;
+  const btnBle = document.getElementById('btnBle');
+  const btnUsb = document.getElementById('btnUsb');
+  const btnDisc = document.getElementById('btnDisc');
+  const connStatus = document.getElementById('connStatus');
+  const bench = document.getElementById('bench');
+  const enc = new TextEncoder();
+
+  // Atualiza o badge de modo a partir do texto que a placa manda
+  let rxLine = '';
+  function onDeviceText(txt) {
+    print(txt);
+    rxLine += txt;
+    const lines = rxLine.split('\n'); rxLine = lines.pop();
+    for (const l of lines) {
+      const m = l.match(/\[MODO (LEITURA|SALVAR|GRAVAR)\]/);
+      if (m) setModo(m[1]);
+      else if (l.startsWith('===== MENU') || l.startsWith('Nao ha valor salvo') || l.startsWith('Memoria apagada') || l.startsWith('UID salvo') || l.startsWith('Nenhum valor salvo')) setModo('NENHUM');
+    }
+  }
+
+  function setConnected(c) {
+    conn = c;
+    const live = !!c;
+    btnBle.hidden = btnUsb.hidden = live;
+    btnDisc.hidden = !live;
+    connStatus.textContent = live ? `Conectado: ${c.label}` : 'Simulador (nenhuma placa conectada)';
+    connStatus.classList.toggle('live', live);
+    document.getElementById('baud').textContent = live ? c.kind : 'simulador';
+    bench.classList.toggle('bench-off', live);
+    if (live) { placedId = null; halted = false; renderTags(); renderReader(); readerLabel.textContent = 'Placa real conectada: use as tags de verdade no RC522'; }
+    else renderReader();
+    setModo('NENHUM');
+  }
+
+  async function conectarBle() {
+    if (!navigator.bluetooth) { alert('Este navegador nao suporta Web Bluetooth. Use Chrome ou Edge (desktop ou Android). Safari e iPhone nao suportam.'); return; }
+    try {
+      const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [NUS] }, { namePrefix: 'LeitorRFID' }], optionalServices: [NUS] });
+      connStatus.textContent = 'Conectando a ' + (dev.name || 'dispositivo') + '...';
+      const server = await dev.gatt.connect();
+      const svc = await server.getPrimaryService(NUS);
+      const tx = await svc.getCharacteristic(NUS_TX);
+      const rx = await svc.getCharacteristic(NUS_RX);
+      const dec = new TextDecoder();
+      tx.addEventListener('characteristicvaluechanged', e => onDeviceText(dec.decode(e.target.value, { stream: true })));
+      await tx.startNotifications();
+      dev.addEventListener('gattserverdisconnected', () => {
+        if (conn?.dev === dev) { println('\n[Bluetooth desconectado, voltando ao simulador]', 'err'); setConnected(null); }
+      });
+      term.textContent = ''; lineOpen = false; rxLine = '';
+      setConnected({
+        kind: 'BLE', label: (dev.name || 'ESP32') + ' (Bluetooth)', dev,
+        async write(str) { for (let i = 0; i < str.length; i += 20) await rx.writeValue(enc.encode(str.slice(i, i + 20))); },
+        async close() { dev.gatt.disconnect(); },
+      });
+    } catch (err) {
+      if (err.name !== 'NotFoundError') println('Falha ao conectar via Bluetooth: ' + err.message, 'err');
+      connStatus.textContent = conn ? connStatus.textContent : 'Simulador (nenhuma placa conectada)';
+    }
+  }
+
+  async function conectarUsb() {
+    if (!navigator.serial) { alert('Este navegador nao suporta Web Serial. Use Chrome ou Edge no computador.'); return; }
+    try {
+      const port = await navigator.serial.requestPort();
+      await port.open({ baudRate: 115200 });
+      try { await port.setSignals({ dataTerminalReady: false, requestToSend: false }); } catch {}
+      const writer = port.writable.getWriter();
+      const reader = port.readable.pipeThrough(new TextDecoderStream()).getReader();
+      let closing = false;
+      term.textContent = ''; lineOpen = false; rxLine = '';
+      const c = {
+        kind: '115200 baud', label: 'USB serial',
+        write: str => writer.write(enc.encode(str)),
+        async close() { closing = true; try { await reader.cancel(); } catch {} },
+      };
+      setConnected(c);
+      (async () => {
+        try {
+          for (;;) { const { value, done } = await reader.read(); if (done) break; if (value) onDeviceText(value); }
+        } catch (err) { if (!closing) println('\n[Erro na serial: ' + err.message + ']', 'err'); }
+        try { reader.releaseLock(); writer.releaseLock(); await port.close(); } catch {}
+        if (conn === c) { println('\n[USB desconectado, voltando ao simulador]', 'err'); setConnected(null); }
+      })();
+    } catch (err) {
+      if (err.name !== 'NotFoundError') println('Falha ao abrir a porta USB: ' + err.message, 'err');
+    }
+  }
+
+  btnBle.addEventListener('click', conectarBle);
+  btnUsb.addEventListener('click', conectarUsb);
+  btnDisc.addEventListener('click', () => conn?.close());
 
   renderTags(); renderMem();
   setup();
