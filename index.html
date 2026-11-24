@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador Leitor RFID</title>
+<meta name="description" content="Simulador web do LeitorHackerDeTag (ESP32-S3 + RC522): Serial Monitor e tags MIFARE virtuais.">
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e232b;
+    --border: #2a313b;
+    --text: #d7dde5;
+    --muted: #8a94a3;
+    --accent: #3fb68b;
+    --accent-2: #4aa3ff;
+    --warn: #e5a54b;
+    --danger: #e5604b;
+    --term-bg: #0a0c0f;
+    --term-text: #c8f7d8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 18px 16px 6px; max-width: 1200px; margin: 0 auto; }
+  header h1 { margin: 0; font-size: 20px; }
+  header p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  main {
+    max-width: 1200px; margin: 0 auto; padding: 12px 16px 32px;
+    display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .panel h2 {
+    margin: 0; padding: 10px 14px; font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .badge { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 99px; background: var(--panel-2); color: var(--text); text-transform: none; letter-spacing: 0; }
+  .badge.on { background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--accent); }
+
+  /* Serial monitor */
+  #term {
+    background: var(--term-bg); color: var(--term-text); font: 13px/1.5 var(--mono);
+    height: 460px; overflow-y: auto; padding: 12px 14px; white-space: pre-wrap; word-break: break-word; margin: 0;
+  }
+  #term .tx { color: var(--accent-2); }
+  #term .err { color: var(--danger); }
+  #term .ok { color: #7ee2a8; }
+  .sendbar { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+  .sendbar input {
+    flex: 1; min-width: 0; background: var(--term-bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font: 14px var(--mono);
+  }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent-2); }
+  button.primary { background: var(--accent-2); border-color: var(--accent-2); color: #06121f; font-weight: 600; }
+  .quick { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 10px; }
+  .quick button { font-family: var(--mono); font-size: 13px; padding: 6px 10px; }
+  .opts { display: flex; gap: 14px; align-items: center; padding: 0 12px 10px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+
+  /* Reader */
+  .reader-wrap { padding: 14px; }
+  #reader {
+    border: 2px dashed var(--border); border-radius: 12px; min-height: 130px; padding: 14px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    background: repeating-radial-gradient(circle at center, transparent 0 14px, color-mix(in srgb, var(--accent-2) 6%, transparent) 14px 16px);
+    transition: border-color .2s;
+  }
+  #reader.active { border-color: var(--accent); }
+  #reader .label { color: var(--muted); font-size: 13px; text-align: center; }
+  .led { width: 10px; height: 10px; border-radius: 50%; background: #3a2020; display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .led.on { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+  .tags { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; padding: 0 14px 14px; }
+  .tag {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; cursor: pointer;
+    display: flex; flex-direction: column; gap: 4px; text-align: left; font: inherit; color: inherit; width: 100%;
+  }
+  .tag:hover { border-color: var(--accent-2); }
+  .tag.placed { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .tag .name { font-weight: 600; font-size: 14px; }
+  .tag .kind { font-size: 11px; color: var(--muted); }
+  .tag .uid { font: 12px var(--mono); color: var(--warn); }
+  .tag .data { font: 11px var(--mono); color: var(--muted); word-break: break-all; }
+  .tag .actions { display: flex; gap: 6px; margin-top: 4px; }
+  .tag .actions span { font-size: 11px; color: var(--accent-2); text-decoration: underline; cursor: pointer; }
+
+  .mem { padding: 12px 14px; font: 12px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--border); }
+  .mem b { color: var(--text); font-weight: 600; }
+  .foot { padding: 10px 14px 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; width: min(420px, calc(100vw - 32px));
+  }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  dialog label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  dialog input, dialog select {
+    width: 100%; background: var(--term-bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: 13px var(--mono);
+  }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  .hint { font-size: 12px; color: var(--muted); padding: 0 14px 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Leitor Hacker de Tag: simulador</h1>
+  <p>ESP32-S3 + RC522. Mesmo menu e mesmas mensagens do sketch, com tags MIFARE Classic 1K virtuais.</p>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Serial Monitor <span class="badge" id="baud">115200 baud</span></h2>
+    <pre id="term" aria-live="polite"></pre>
+    <form class="sendbar" id="sendForm">
+      <input id="input" autocomplete="off" placeholder="Digite um comando (1-5, m) e Enter" aria-label="Mensagem para a serial">
+      <button class="primary" type="submit">Enviar</button>
+    </form>
+    <div class="quick" id="quick"></div>
+    <div class="opts">
+      <label><input type="checkbox" id="autoscroll" checked> Autoscroll</label>
+      <label><input type="checkbox" id="timestamps"> Timestamp</label>
+      <button type="button" id="clearTerm">Limpar saída</button>
+      <button type="button" id="reset">Reset (EN)</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Bancada <span class="badge" id="modeBadge">modo: NENHUM</span></h2>
+    <div class="reader-wrap">
+      <div id="reader">
+        <div><span class="led" id="led"></span><b>RC522</b></div>
+        <div class="label" id="readerLabel">Clique numa tag abaixo para aproximá-la do leitor</div>
+      </div>
+    </div>
+    <div class="tags" id="tags"></div>
+    <p class="hint">Clique numa tag para aproximar ou afastar. Uma tag lida fica em HALT até ser afastada, como no hardware real.</p>
+    <div class="mem" id="mem"></div>
+    <div class="foot">
+      <button type="button" id="newTag">+ Nova tag</button>
+      <button type="button" id="resetTags">Restaurar tags padrão</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="tagDialog">
+  <form method="dialog" id="tagForm">
+    <b id="dlgTitle">Nova tag</b>
+    <label for="fName">Nome</label>
+    <input id="fName" required>
+    <label for="fKind">Tipo</label>
+    <select id="fKind">
+      <option value="normal">MIFARE 1K original (UID travado)</option>
+      <option value="gen1a">Magic Gen1a (backdoor 0x40/0x43)</option>
+      <option value="gen2">Magic Gen2 / CUID (bloco 0 gravável)</option>
+    </select>
+    <label for="fUid">UID (hex, 4 bytes)</label>
+    <input id="fUid" placeholder="DE AD BE EF">
+    <label for="fData">Bloco 4 (hex, 16 bytes)</label>
+    <input id="fData" placeholder="00 11 22 ...">
+    <label for="fKey">Chave A</label>
+    <select id="fKey">
+      <option value="default">FF FF FF FF FF FF (padrão)</option>
+      <option value="custom">Chave diferente (autenticação falha)</option>
+    </select>
+    <div class="row">
+      <button value="cancel" formnovalidate>Cancelar</button>
+      <button class="primary" value="ok">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+  const BLOCO_DADOS = 4;
+  const LS_TAGS = 'rfidsim.tags.v1';
+  const LS_PREFS = 'rfidsim.prefs.v1';
+
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+
+  const hexToBytes = s => (s || '').replace(/[^0-9a-f]/gi, '').match(/.{1,2}/g)?.map(h => parseInt(h.padEnd(2, '0'), 16)) || [];
+  const printHex = arr => arr.map(b => b.toString(16).toUpperCase().padStart(2, '0') + ' ').join('');
+  const rnd = n => Array.from({ length: n }, () => Math.floor(Math.random() * 256));
+  const textBlock = t => { const b = Array.from(new TextEncoder().encode(t)).slice(0, 16); while (b.length < 16) b.push(0); return b; };
+
+  const defaultTags = () => [
+    { id: 't1', name: 'Crachá da empresa', kind: 'normal', uid: [0x93, 0x4A, 0x1C, 0x7E], data: textBlock('ACESSO:LIBERADO'), keyOk: true },
+    { id: 't2', name: 'Chaveiro do condomínio', kind: 'normal', uid: [0x5B, 0xE2, 0x09, 0xA4], data: [0x00,0x00,0x01,0x2C,0xFF,0xFF,0xFE,0xD3,0x00,0x00,0x01,0x2C,0x04,0xFB,0x04,0xFB], keyOk: true },
+    { id: 't3', name: 'Cartão de transporte', kind: 'normal', uid: [0x0D, 0x77, 0xC1, 0x52], data: rnd(16), keyOk: false },
+    { id: 't4', name: 'Magic Gen1a (UID)', kind: 'gen1a', uid: [0x01, 0x02, 0x03, 0x04], data: new Array(16).fill(0), keyOk: true },
+    { id: 't5', name: 'Magic Gen2 / CUID', kind: 'gen2', uid: [0xAA, 0xBB, 0xCC, 0xDD], data: new Array(16).fill(0), keyOk: true },
+    { id: 't6', name: 'Tag branca comum', kind: 'normal', uid: [0x7C, 0x31, 0x9E, 0x0F], data: new Array(16).fill(0), keyOk: true },
+  ];
+  let tags = store.get(LS_TAGS, null) || defaultTags();
+  const saveTags = () => store.set(LS_TAGS, tags);
+
+  // Preferences ("rfid" namespace)
+  const prefs = {
+    load() { return store.get(LS_PREFS, { tem: false }); },
+    save(v) { store.set(LS_PREFS, v); },
+    clear() { store.del(LS_PREFS); },
+  };
+
+  // ---------- Terminal ----------
+  const term = document.getElementById('term');
+  const autoscroll = document.getElementById('autoscroll');
+  const tsBox = document.getElementById('timestamps');
+  let lineOpen = false;
+  const ts = () => { const d = new Date(); return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0') + ' -> '; };
+  function serialPrint(s, cls) {
+    const parts = String(s).split('\n');
+    parts.forEach((p, i) => {
+      if (i > 0) { term.append('\n'); lineOpen = false; }
+      if (p === '' ) return;
+      if (!lineOpen && tsBox.checked) term.append(ts());
+      lineOpen = true;
+      if (cls) { const sp = document.createElement('span'); sp.className = cls; sp.textContent = p; term.append(sp); }
+      else term.append(p);
+    });
+    if (autoscroll.checked) term.scrollTop = term.scrollHeight;
+  }
+  const println = (s = '', cls) => serialPrint(s + '\n', cls);
+  const print = (s, cls) => serialPrint(s, cls);
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ---------- RC522 / tag model ----------
+  let placedId = null;
+  let halted = false;     // tag recebeu HaltA e nao responde a REQA ate ser afastada
+  let busy = false;
+  const placed = () => tags.find(t => t.id === placedId) || null;
+
+  const STATUS = {
+    TIMEOUT: 'Timeout in communication.',
+    NACK: 'A MIFARE PICC responded with NAK.',
+  };
+
+  // Simula o estado de sessao da tag: selecionada, autenticada etc.
+  const sess = { selected: false, crypto: false };
+  function PICC_IsNewCardPresent() { const t = placed(); return !!t && !halted; }
+  function PICC_ReadCardSerial() { sess.selected = true; return true; }
+  function PICC_HaltA() { if (sess.selected) halted = true; sess.selected = false; }
+  function PCD_StopCrypto1() { sess.crypto = false; }
+  function encerrarTag() { PICC_HaltA(); PCD_StopCrypto1(); }
+
+  function autenticar(bloco) {
+    const t = placed();
+    if (!t || !sess.selected || !t.keyOk) {
+      print('Falha na autenticacao: ', 'err'); println(STATUS.TIMEOUT, 'err');
+      sess.crypto = false; sess.selected = false;
+      return false;
+    }
+    sess.crypto = true;
+    return true;
+  }
+  function lerBloco(bloco) {
+    if (!autenticar(bloco)) return null;
+    return placed().data.slice();
+  }
+  function gravarBloco(bloco, dados) {
+    if (!autenticar(bloco)) return false;
+    placed().data = dados.slice(); saveTags(); renderTags();
+    return true;
+  }
+
+  function magicGen1aAbrirBackdoor() {
+    const t = placed();
+    return !!t && t.kind === 'gen1a';
+  }
+  function gravarUidGen1a(uidNovo) {
+    if (uidNovo.length !== 4) { println('Gen1a so suporta UID de 4 bytes.', 'err'); return false; }
+    if (!magicGen1aAbrirBackdoor()) { println('Nao foi possivel abrir o backdoor (tag nao e Gen1a?).', 'err'); return false; }
+    placed().uid = uidNovo.slice(); saveTags(); renderTags();
+    return true;
+  }
+  function gravarUidGen2(uidNovo) {
+    if (!autenticar(0)) return false;
+    const t = placed();
+    if (t.kind !== 'gen2') {
+      print('Falha ao gravar bloco 0 (Gen2): ', 'err'); println(STATUS.NACK, 'err');
+      return false;
+    }
+    t.uid = uidNovo.slice(); saveTags(); renderTags();
+    return true;
+  }
+  function gravarUid(uidNovo) {
+    println('Tentando como Gen2/CUID...');
+    if (gravarUidGen2(uidNovo)) return true;
+    println('Tentando como Gen1a (backdoor)...');
+    PICC_HaltA(); PCD_StopCrypto1();
+    if (gravarUidGen1a(uidNovo)) return true;
+    println('Nao foi possivel gravar o UID. A tag de destino e magic card?', 'err');
+    return false;
+  }
+
+  // ---------- Sketch ----------
+  let modo = 'NENHUM';
+  function setModo(m) { modo = m; document.getElementById('modeBadge').textContent = 'modo: ' + m; document.getElementById('modeBadge').classList.toggle('on', m !== 'NENHUM'); }
+
+  function mostrarMenu() {
+    println();
+    println('===== MENU =====');
+    println('1 - Modo LEITURA (mostra UID e dados da tag)');
+    println('2 - Modo SALVAR (le a tag e guarda na memoria do ESP)');
+    println('3 - Modo GRAVAR (grava UID + dados salvos em outra tag)');
+    println('4 - Ver valor salvo na memoria');
+    println('5 - Apagar valor salvo');
+    println('m - Mostrar menu');
+    println('================');
+  }
+  function mostrarSalvo() {
+    const p = prefs.load();
+    if (!p.tem) { println('Nenhum valor salvo na memoria.'); return; }
+    print('UID salvo : '); print(printHex(p.uid)); println();
+    print('Dados salvos (bloco ' + BLOCO_DADOS + '): '); print(printHex(p.dados)); println();
+  }
+
+  function tratarSerial(str) {
+    for (const c of str) {
+      if (c === '\n' || c === '\r' || c === ' ') continue;
+      switch (c) {
+        case '1': setModo('LEITURA'); println('\n[MODO LEITURA] Aproxime uma tag... (envie outro comando para sair)'); break;
+        case '2': setModo('SALVAR'); println('\n[MODO SALVAR] Aproxime a tag que sera salva na memoria...'); break;
+        case '3':
+          if (!prefs.load().tem) { println('\nNao ha valor salvo! Use o modo 2 primeiro.', 'err'); setModo('NENHUM'); break; }
+          setModo('GRAVAR');
+          println('\n[MODO GRAVAR] Aproxime a tag de DESTINO (deve ser magic card para copiar o UID)...');
+          break;
+        case '4': setModo('NENHUM'); println(); mostrarSalvo(); break;
+        case '5': setModo('NENHUM'); prefs.clear(); println('\nMemoria apagada.'); break;
+        case 'm': case 'M': setModo('NENHUM'); mostrarMenu(); break;
+        default: println("\nComando invalido. Envie 'm' para ver o menu.", 'err');
+      }
+    }
+    renderMem();
+    loop();
+  }
+
+  async function loop() {
+    if (busy) return;
+    if (modo === 'NENHUM') return;
+    if (!PICC_IsNewCardPresent() || !PICC_ReadCardSerial()) return;
+    busy = true; setLed(true);
+    await sleep(120);
+    const t = placed();
+    const uid = t.uid.slice();
+
+    switch (modo) {
+      case 'LEITURA': {
+        print('UID: '); print(printHex(uid)); println();
+        print('Tipo: '); println('MIFARE 1KB');
+        const d = lerBloco(BLOCO_DADOS);
+        if (d) { print('Bloco ' + BLOCO_DADOS + ': '); print(printHex(d)); println(); }
+        encerrarTag();
+        await sleep(1500);
+        break;
+      }
+      case 'SALVAR': {
+        const d = lerBloco(BLOCO_DADOS);
+        if (d) {
+          prefs.save({ tem: true, uid, dados: d });
+          println('Valor salvo na memoria do ESP!', 'ok');
+          print('UID: '); print(printHex(uid)); println();
+          print('Dados: '); print(printHex(d)); println();
+        }
+        encerrarTag();
+        setModo('NENHUM');
+        mostrarMenu();
+        break;
+      }
+      case 'GRAVAR': {
+        const p = prefs.load();
+        const uidOk = gravarUid(p.uid);
+        let abort = false;
+        if (uidOk) {
+          println('UID gravado! Re-selecionando a tag...', 'ok');
+          PICC_HaltA(); PCD_StopCrypto1();
+          await sleep(100);
+          // tag com UID novo responde de novo (no sim consideramos que a reselecao funciona)
+          halted = false;
+          if (!PICC_IsNewCardPresent() || !PICC_ReadCardSerial()) {
+            println('Nao foi possivel reselecionar a tag apos gravar o UID.', 'err');
+            setModo('NENHUM'); mostrarMenu(); abort = true;
+          }
+        }
+        if (abort) break;
+        if (gravarBloco(BLOCO_DADOS, p.dados)) {
+          const conf = lerBloco(BLOCO_DADOS);
+          if (conf && conf.every((b, i) => b === p.dados[i])) println('Gravacao de dados concluida e verificada!', 'ok');
+          else println('Dados gravados, mas verificacao falhou.', 'err');
+        }
+        encerrarTag();
+        setModo('NENHUM');
+        mostrarMenu();
+        break;
+      }
+    }
+    renderMem(); setLed(false); busy = false;
+    loop();
+  }
+
+  async function setup() {
+    term.textContent = ''; lineOpen = false;
+    setModo('NENHUM');
+    await sleep(250);
+    println('RFID RC522 + ESP32-S3');
+    println('Firmware Version: 0x92 = v2.0');
+    mostrarMenu();
+    loop();
+  }
+
+  // ---------- UI ----------
+  const tagsEl = document.getElementById('tags');
+  const reader = document.getElementById('reader');
+  const readerLabel = document.getElementById('readerLabel');
+  const led = document.getElementById('led');
+  const setLed = on => led.classList.toggle('on', on);
+  const kindLabel = { normal: 'MIFARE 1K original', gen1a: 'Magic Gen1a', gen2: 'Magic Gen2 / CUID' };
+
+  function renderTags() {
+    tagsEl.textContent = '';
+    for (const t of tags) {
+      const el = document.createElement('div');
+      el.className = 'tag' + (t.id === placedId ? ' placed' : '');
+      el.setAttribute('role', 'button'); el.tabIndex = 0;
+      el.innerHTML = `<div class="name"></div><div class="kind"></div><div class="uid"></div><div class="data"></div>
+        <div class="actions"><span data-act="edit">editar</span><span data-act="del">remover</span></div>`;
+      el.querySelector('.name').textContent = t.name;
+      el.querySelector('.kind').textContent = kindLabel[t.kind] + (t.keyOk ? '' : ' · chave desconhecida');
+      el.querySelector('.uid').textContent = 'UID ' + printHex(t.uid).trim();
+      el.querySelector('.data').textContent = 'B4 ' + printHex(t.data).trim();
+      el.addEventListener('click', e => {
+        const act = e.target.dataset?.act;
+        if (act === 'edit') { e.stopPropagation(); openDialog(t); return; }
+        if (act === 'del') { e.stopPropagation(); if (placedId === t.id) placedId = null; tags = tags.filter(x => x !== t); saveTags(); renderTags(); renderReader(); return; }
+        toggleTag(t.id);
+      });
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleTag(t.id); } });
+      tagsEl.append(el);
+    }
+  }
+  function renderReader() {
+    const t = placed();
+    reader.classList.toggle('active', !!t);
+    readerLabel.textContent = t ? `${t.name} sobre o leitor${halted ? ' (HALT, afaste para ler de novo)' : ''}` : 'Clique numa tag abaixo para aproximá-la do leitor';
+  }
+  function renderMem() {
+    const p = prefs.load();
+    const m = document.getElementById('mem');
+    m.innerHTML = '<b>Preferences "rfid"</b><br>';
+    if (!p.tem) m.append('(vazio)');
+    else m.append(`uid: ${printHex(p.uid).trim()}`, document.createElement('br'), `dados: ${printHex(p.dados).trim()}`);
+    renderReader();
+  }
+  function toggleTag(id) {
+    if (busy) return;
+    if (placedId === id) { placedId = null; halted = false; }
+    else { placedId = id; halted = false; sess.selected = false; sess.crypto = false; }
+    renderTags(); renderReader();
+    loop();
+  }
+
+  // Dialog
+  const dlg = document.getElementById('tagDialog');
+  let editing = null;
+  function openDialog(t) {
+    editing = t || null;
+    document.getElementById('dlgTitle').textContent = t ? 'Editar tag' : 'Nova tag';
+    document.getElementById('fName').value = t?.name || 'Minha tag';
+    document.getElementById('fKind').value = t?.kind || 'normal';
+    document.getElementById('fUid').value = printHex(t?.uid || rnd(4)).trim();
+    document.getElementById('fData').value = printHex(t?.data || new Array(16).fill(0)).trim();
+    document.getElementById('fKey').value = (t?.keyOk ?? true) ? 'default' : 'custom';
+    dlg.showModal();
+  }
+  dlg.addEventListener('close', () => {
+    if (dlg.returnValue !== 'ok') return;
+    const uid = hexToBytes(document.getElementById('fUid').value).slice(0, 4);
+    while (uid.length < 4) uid.push(0);
+    const data = hexToBytes(document.getElementById('fData').value).slice(0, 16);
+    while (data.length < 16) data.push(0);
+    const v = {
+      name: document.getElementById('fName').value || 'Tag',
+      kind: document.getElementById('fKind').value,
+      uid, data,
+      keyOk: document.getElementById('fKey').value === 'default',
+    };
+    if (editing) Object.assign(editing, v);
+    else tags.push({ id: 't' + Date.now(), ...v });
+    saveTags(); renderTags(); renderReader();
+  });
+
+  // Serial input
+  const input = document.getElementById('input');
+  function send(str) {
+    println(str, 'tx');
+    tratarSerial(str + '\n');
+  }
+  document.getElementById('sendForm').addEventListener('submit', e => {
+    e.preventDefault();
+    if (!input.value) return;
+    send(input.value); input.value = '';
+  });
+  const quick = document.getElementById('quick');
+  [['1', 'Leitura'], ['2', 'Salvar'], ['3', 'Gravar'], ['4', 'Ver memória'], ['5', 'Apagar'], ['m', 'Menu']].forEach(([c, l]) => {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = `${c} · ${l}`;
+    b.addEventListener('click', () => send(c)); quick.append(b);
+  });
+  document.getElementById('clearTerm').addEventListener('click', () => { term.textContent = ''; lineOpen = false; });
+  document.getElementById('reset').addEventListener('click', () => { if (!busy) setup(); });
+  document.getElementById('newTag').addEventListener('click', () => openDialog(null));
+  document.getElementById('resetTags').addEventListener('click', () => { placedId = null; tags = defaultTags(); saveTags(); renderTags(); renderReader(); });
+
+  renderTags(); renderMem();
+  setup();
+})();
+</script>
+</body>
+</html>
